@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Local environment files and secrets
+.env
+.env.local
+.env.*.local
+
+# Runtime files
+uploads/
+logs/
+*.log
+*.pid
+
+# Test output
+coverage/
+.nyc_output/
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
