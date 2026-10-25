@@ -14,6 +14,16 @@ const settingsSchema = new Schema({
   singletonKey: { type: String, default: 'primary', unique: true }, name: { type: String, required: true, default: 'Saffron & Stone' }, description: String,
   logoUrl: String, heroImageUrl: String, brandColor: { type: String, default: '#8c3b2a' }, phone: String, email: String, address: String, mapUrl: String,
   socialLinks: { instagram: String, facebook: String, tiktok: String }, timezone: { type: String, default: 'Asia/Colombo' }, currency: { type: String, default: 'LKR' },
+  websiteTheme: {
+    heroEyebrow: { type: String, default: 'Modern Sri Lankan dining' }, heroTitle: { type: String, default: 'Fire, spice, island soul.' },
+    heroOverlay: { type: Number, min: 0, max: 90, default: 55 }, storyEyebrow: { type: String, default: 'Our story' },
+    storyTitle: { type: String, default: 'Rooted here. Looking forward.' }, storyText: String, storyImageUrl: String,
+    seasonalEnabled: { type: Boolean, default: false }, seasonalEffect: { type: String, enum: ['none','christmas','new_year','poya','vesak','avurudu','valentine','halloween'], default: 'none' },
+    stylePreset: { type: String, enum: ['signature','modern','minimal','tropical','monochrome'], default: 'signature' },
+    cardStyle: { type: String, enum: ['soft','outlined','glass'], default: 'soft' }, buttonStyle: { type: String, enum: ['pill','rounded','square'], default: 'pill' },
+    heroAlignment: { type: String, enum: ['left','center'], default: 'left' }, contentWidth: { type: String, enum: ['comfortable','wide'], default: 'comfortable' },
+    announcement: { type: String, maxlength: 180 }, announcementEnabled: { type: Boolean, default: false }
+  },
   openingHours: [{ day: { type: Number, min: 0, max: 6 }, open: String, close: String, closed: Boolean }], closures: [{ date: String, reason: String }],
   taxRateBps: { type: Number, min: 0, max: 10000, default: 0 }, serviceRateBps: { type: Number, min: 0, max: 10000, default: 1000 },
   reservationRules: { leadMinutes: { type: Number, default: 60 }, durationMinutes: { type: Number, default: 120 }, maxPartySize: { type: Number, default: 20 } },
@@ -42,7 +52,7 @@ const tableSessionSchema = new Schema({
   guestIds: [String], expiresAt: { type: Date, required: true, index: { expires: 0 } }, activatedBy: { type: Schema.Types.ObjectId, ref: 'User' }, closedAt: Date
 }, { timestamps: true });
 
-const orderItemSchema = new Schema({ menuItemId: Schema.Types.ObjectId, name: String, quantity: { type: Number, min: 1 }, basePrice: Number, variant: { name: String, priceDelta: Number }, extras: [{ name: String, priceDelta: Number }], unitPrice: Number, lineTotal: Number, notes: String }, { _id: false });
+const orderItemSchema = new Schema({ menuItemId: Schema.Types.ObjectId, name: String, quantity: { type: Number, min: 1 }, basePrice: Number, prepMinutes: { type: Number, min: 0 }, variant: { name: String, priceDelta: Number }, extras: [{ name: String, priceDelta: Number }], unitPrice: Number, lineTotal: Number, notes: String }, { _id: false });
 const orderSchema = new Schema({
   orderNumber: { type: String, required: true, unique: true }, tableSession: { type: Schema.Types.ObjectId, ref: 'TableSession', required: true, index: true }, table: { type: Schema.Types.ObjectId, ref: 'Table', required: true, index: true }, guestId: String,
   idempotencyKey: { type: String, required: true }, items: { type: [orderItemSchema], required: true }, notes: String,

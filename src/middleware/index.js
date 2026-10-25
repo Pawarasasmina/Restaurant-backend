@@ -30,8 +30,9 @@ export const guestSession = async (req, _res, next) => {
 export const notFound = (_req, _res, next) => next(new AppError(404, 'Route not found', 'NOT_FOUND'));
 export const errors = (error, _req, res, _next) => {
   const isZod = error instanceof ZodError;
-  const status = isZod ? 422 : error.status || (error.code === 11000 ? 409 : 500);
-  const message = isZod ? 'Validation failed' : error.code === 11000 ? 'A unique value already exists' : error.message || 'Internal server error';
+  const isUpload = error?.name === 'MulterError';
+  const status = isZod || isUpload ? 422 : error.status || (error.code === 11000 ? 409 : 500);
+  const message = isZod ? 'Validation failed' : isUpload ? 'Image must be no larger than 5 MB' : error.code === 11000 ? 'A unique value already exists' : error.message || 'Internal server error';
   res.status(status).json({ success: false, error: { code: isZod ? 'VALIDATION_ERROR' : error.code || 'INTERNAL_ERROR', message, ...(isZod && { details: error.issues }) } });
 };
 

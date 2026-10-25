@@ -2,14 +2,24 @@ import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import rateLimit from 'express-rate-limit';
+import multer from 'multer';
+import mongoose from 'mongoose';
 import { env } from '../config/env.js';
 import { AuditLog, Bill, MenuCategory, MenuItem, Order, Reservation, RestaurantSettings, Table, TableSession, User, WaiterCall } from '../models/index.js';
 import { allow, auth, guestSession, validate } from '../middleware/index.js';
 import { asyncHandler, AppError, decryptToken, encryptToken, hashToken, ok, signAccess, signRefresh, token } from '../utils/core.js';
-import { callSchema, categorySchema, itemSchema, loginSchema, orderSchema, reservationSchema, sessionSchema, setupSchema, tableSchema } from '../validators/index.js';
+import { callSchema, categorySchema, itemSchema, loginSchema, orderSchema, reservationSchema, sessionSchema, settingsSchema, setupSchema, tableSchema } from '../validators/index.js';
 import { createBill, createOrder, createReservation, createWaiterCall, issueTableQr, openTableSession, qrData, recordPayment, transitionOrder } from '../services/domain.js';
 
 const router = Router();
+const imageUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024, files: 1 },
+  fileFilter: (_req, file, callback) => {
+    const allowed = ['image/jpeg','image/png','image/webp','image/gif'].includes(file.mimetype);
+    callback(allowed ? null : new AppError(422,'Only JPG, PNG, WebP, and GIF images are allowed'), allowed);
+  },
+});
 const audit = (req, action, entity, after) => AuditLog.create({ actor: req.user?.id, action, entityType: entity?.constructor?.modelName, entityId: entity?.id, after, ip: req.ip, userAgent: req.get('user-agent') }).catch(() => {});
 const cookies = res => ({ set(access, refresh) { const options = { httpOnly: true, secure: env.NODE_ENV === 'production', sameSite: 'lax', path: '/' }; res.cookie('accessToken', access, { ...options, maxAge: 15*60000 }); res.cookie('refreshToken', refresh, { ...options, maxAge: 7*86400000 }); }, clear() { res.clearCookie('accessToken'); res.clearCookie('refreshToken'); } });
 
@@ -25,6 +35,14 @@ router.post('/auth/logout', asyncHandler(async (req, res) => { cookies(res).clea
 router.get('/auth/me', auth, (req, res) => ok(res, { user: req.user }));
 
 router.get('/public/settings', asyncHandler(async (_req, res) => ok(res, await RestaurantSettings.findOne({ singletonKey: 'primary' }))));
+router.get('/public/media/:id',asyncHandler(async(req,res)=>{
+  if(!mongoose.isValidObjectId(req.params.id))throw new AppError(404,'Image not found');
+  const bucket=new mongoose.mongo.GridFSBucket(mongoose.connection.db,{bucketName:'websiteImages'});
+  const files=await bucket.find({_id:new mongoose.Types.ObjectId(req.params.id)}).limit(1).toArray();
+  if(!files.length)throw new AppError(404,'Image not found');
+  res.set({ 'Content-Type': files[0].metadata?.contentType || 'application/octet-stream', 'Cache-Control': 'public, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff' });
+  bucket.openDownloadStream(files[0]._id).on('error',()=>res.destroy()).pipe(res);
+}));
 router.get('/public/menu', asyncHandler(async (req, res) => { const query = { visible: true }; if (req.query.category) query.category = req.query.category; if (req.query.featured === 'true') query.featured = true; if (req.query.search) query.$text = { $search: req.query.search }; const page = Math.max(1, Number(req.query.page)||1), limit = Math.min(50, Math.max(1, Number(req.query.limit)||24)); const [items,total,categories] = await Promise.all([MenuItem.find(query).populate('category').sort({ order:1,name:1 }).skip((page-1)*limit).limit(limit),MenuItem.countDocuments(query),MenuCategory.find({ visible:true }).sort({order:1}),]); ok(res,{items,categories},200,{page,limit,total,pages:Math.ceil(total/limit)}); }));
 router.post('/public/reservations', rateLimit({ windowMs: 60000, limit: 5 }), validate(reservationSchema), asyncHandler(async (req,res)=>ok(res,await createReservation(req.validated.body),201)));
 router.post('/table-sessions', rateLimit({ windowMs: 60000, limit: 10 }), validate(sessionSchema), asyncHandler(async(req,res)=>{ const result=await openTableSession({...req.validated.body,autoActivate:env.DEMO_AUTO_ACTIVATE_TABLES,minutes:env.TABLE_SESSION_MINUTES}); if(result.rawSession) res.cookie('tableSession',result.rawSession,{httpOnly:true,secure:env.NODE_ENV==='production',sameSite:'lax',maxAge:env.TABLE_SESSION_MINUTES*60000}); ok(res,{table:{id:result.table.id,number:result.table.number,displayName:result.table.displayName},session:{id:result.session.id,status:result.session.status,expiresAt:result.session.expiresAt},joined:result.joined},201); }));
@@ -34,8 +52,16 @@ router.post('/guest/orders',guestSession,validate(orderSchema),asyncHandler(asyn
 router.post('/guest/waiter-calls',guestSession,validate(callSchema),asyncHandler(async(req,res)=>{const call=await createWaiterCall(req.tableSession,req.validated.body.type);req.app.get('io').to('staff:calls').emit('waiter-call:new',call);ok(res,call,201);}));
 
 router.use(auth);
+router.post('/uploads/images',allow('owner','manager'),imageUpload.single('image'),asyncHandler(async(req,res)=>{
+  if(!req.file)throw new AppError(422,'Choose an image up to 5 MB');
+  const bucket=new mongoose.mongo.GridFSBucket(mongoose.connection.db,{bucketName:'websiteImages'});
+  const fileId=new mongoose.Types.ObjectId();
+  await new Promise((resolve,reject)=>{const stream=bucket.openUploadStreamWithId(fileId,`${Date.now()}-${req.file.originalname.replace(/[^a-z0-9._-]/gi,'-')}`,{metadata:{contentType:req.file.mimetype,uploadedBy:req.user.id}});stream.on('error',reject);stream.on('finish',resolve);stream.end(req.file.buffer);});
+  const url=`/api/v1/public/media/${fileId}`;
+  ok(res,{url,id:fileId},201);
+}));
 router.get('/settings',(_req,res,next)=>RestaurantSettings.findOne({singletonKey:'primary'}).then(x=>ok(res,x)).catch(next));
-router.put('/settings',allow('owner','manager'),asyncHandler(async(req,res)=>{const value=await RestaurantSettings.findOneAndUpdate({singletonKey:'primary'},{$set:req.body},{new:true,upsert:true,runValidators:true});audit(req,'settings.update',value,req.body);ok(res,value);}));
+router.put('/settings',allow('owner','manager'),validate(settingsSchema),asyncHandler(async(req,res)=>{const value=await RestaurantSettings.findOneAndUpdate({singletonKey:'primary'},{$set:req.validated.body},{new:true,upsert:true,runValidators:true});audit(req,'settings.update',value,req.validated.body);ok(res,value);}));
 
 const crud = (path, Model, schema, roles=['owner','manager']) => {
   router.get(path,asyncHandler(async(req,res)=>{const page=Math.max(1,+req.query.page||1),limit=Math.min(100,+req.query.limit||30);const query=req.query.search?{$text:{$search:req.query.search}}:{};const [items,total]=await Promise.all([Model.find(query).sort({createdAt:-1}).skip((page-1)*limit).limit(limit),Model.countDocuments(query)]);ok(res,items,200,{page,limit,total});}));
@@ -65,7 +91,17 @@ router.post('/reservations',allow('owner','manager','waiter'),validate(reservati
 router.patch('/reservations/:id',allow('owner','manager','waiter'),asyncHandler(async(req,res)=>ok(res,await Reservation.findByIdAndUpdate(req.params.id,{$set:req.body},{new:true,runValidators:true}))));
 router.get('/bills',allow('owner','manager','cashier'),asyncHandler(async(req,res)=>{const query=req.query.status?{status:req.query.status}:{};ok(res,await Bill.find(query).sort({createdAt:-1}).limit(300));}));
 router.post('/bills',allow('owner','manager','cashier'),asyncHandler(async(req,res)=>ok(res,await createBill(req.body.tableSessionId,req.user.id),201)));
-router.post('/bills/:id/payments',allow('owner','manager','cashier'),asyncHandler(async(req,res)=>ok(res,await recordPayment(req.params.id,req.body,req.user.id),201)));
+router.post('/bills/:id/payments',allow('owner','manager','cashier'),asyncHandler(async(req,res)=>{
+  if (!['cash','card_external','manual'].includes(req.body.method)) throw new AppError(422,'A valid payment method is required');
+  const result=await recordPayment(req.params.id,req.body,req.user.id);
+  if(result.bill.status==='settled'){
+    const io=req.app.get('io');
+    io.to(`table:${result.bill.tableSession}`).emit('bill:settled',{billId:result.bill.id});
+    io.to(`table:${result.bill.tableSession}`).emit('session:closed',{reason:'paid'});
+    io.to('staff:orders').emit('table:closed',{tableSessionId:result.bill.tableSession});
+  }
+  ok(res,result,201);
+}));
 router.get('/analytics',allow('owner','manager','cashier'),asyncHandler(async(req,res)=>{const from=req.query.from?new Date(req.query.from):new Date(Date.now()-30*86400000),to=req.query.to?new Date(req.query.to):new Date();const [bills,orders,reservations,calls]=await Promise.all([Bill.find({status:'settled',createdAt:{$gte:from,$lte:to}}),Order.find({createdAt:{$gte:from,$lte:to}}),Reservation.find({createdAt:{$gte:from,$lte:to}}),WaiterCall.find({createdAt:{$gte:from,$lte:to}})]);const revenue=bills.reduce((a,b)=>a+b.total-b.refunded,0);ok(res,{revenue,orderVolume:orders.length,averageOrderValue:orders.length?Math.round(orders.reduce((a,o)=>a+o.total,0)/orders.length):0,reservations:{total:reservations.length,cancelled:reservations.filter(r=>r.status==='cancelled').length},waiterCalls:{total:calls.length,resolved:calls.filter(c=>c.status==='resolved').length}});}));
 router.get('/staff',allow('owner','manager'),asyncHandler(async(_req,res)=>ok(res,await User.find().select('-passwordHash -refreshTokenHashes'))));
 router.post('/staff',allow('owner','manager'),asyncHandler(async(req,res)=>{if(req.user.role==='manager'&&['owner','manager'].includes(req.body.role))throw new AppError(403,'Managers cannot create elevated accounts');const password=req.body.password||token(16);const user=await User.create({...req.body,passwordHash:await bcrypt.hash(password,12)});ok(res,{user:{id:user.id,name:user.name,email:user.email,role:user.role},temporaryPassword:req.body.password?undefined:password},201);}));

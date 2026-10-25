@@ -31,7 +31,7 @@ export const calculateOrder = async (session, payload) => {
     const extras = (input.extraIds || []).map(extraId => { const extra = item.extras.id(extraId); if (!extra?.available) throw new AppError(409, 'Selected extra is unavailable'); return { name: extra.name, priceDelta: extra.priceDelta }; });
     const discountedBase = Math.round(item.basePrice * (10000 - item.discountBps) / 10000);
     const unitPrice = discountedBase + (variant?.priceDelta || 0) + money(extras.map(e => e.priceDelta));
-    return { menuItemId: item.id, name: item.name, quantity: input.quantity, basePrice: item.basePrice, variant: variant && { name: variant.name, priceDelta: variant.priceDelta }, extras, unitPrice, lineTotal: unitPrice * input.quantity, notes: input.notes };
+    return { menuItemId: item.id, name: item.name, quantity: input.quantity, basePrice: item.basePrice, prepMinutes: item.prepMinutes, variant: variant && { name: variant.name, priceDelta: variant.priceDelta }, extras, unitPrice, lineTotal: unitPrice * input.quantity, notes: input.notes };
   });
   const settings = await RestaurantSettings.findOne({ singletonKey: 'primary' });
   const subtotal = money(snapshots.map(i => i.lineTotal)); const tax = Math.round(subtotal * (settings?.taxRateBps || 0) / 10000); const serviceCharge = Math.round(subtotal * (settings?.serviceRateBps || 0) / 10000);
@@ -82,7 +82,27 @@ export const createBill = async (sessionId, actor) => {
 };
 export const recordPayment = async (billId, payload, actor) => {
   const dbSession = await mongoose.startSession(); let result;
-  await dbSession.withTransaction(async () => { const bill = await Bill.findById(billId).session(dbSession); if (!bill || !['open','partial'].includes(bill.status)) throw new AppError(409, 'Bill cannot accept payment'); const due = bill.total - bill.paid + bill.refunded; if (payload.amount > due) throw new AppError(422, 'Payment exceeds outstanding balance'); const payment = await Payment.create([{ bill: bill.id, ...payload, recordedBy: actor }], { session: dbSession }); bill.paid += payload.amount; bill.status = bill.paid >= bill.total ? 'settled' : 'partial'; await bill.save({ session: dbSession }); result = { bill, payment: payment[0] }; });
-  await dbSession.endSession(); return result;
+  try {
+    await dbSession.withTransaction(async () => {
+      const bill = await Bill.findById(billId).session(dbSession);
+      if (!bill || !['open','partial'].includes(bill.status)) throw new AppError(409, 'Bill cannot accept payment');
+      if (!Number.isInteger(payload.amount) || payload.amount <= 0) throw new AppError(422, 'Payment amount must be greater than zero');
+      const due = bill.total - bill.paid + bill.refunded;
+      if (payload.amount > due) throw new AppError(422, 'Payment exceeds outstanding balance');
+      const payment = await Payment.create([{ bill: bill.id, ...payload, recordedBy: actor }], { session: dbSession });
+      bill.paid += payload.amount;
+      bill.status = bill.paid >= bill.total ? 'settled' : 'partial';
+      await bill.save({ session: dbSession });
+      let tableSession;
+      if (bill.status === 'settled') {
+        tableSession = await TableSession.findByIdAndUpdate(bill.tableSession, { $set: { status: 'closed', closedAt: new Date() } }, { new: true, session: dbSession });
+        if (tableSession) await Table.findByIdAndUpdate(tableSession.table, { $set: { state: 'cleaning' } }, { session: dbSession });
+      }
+      result = { bill, payment: payment[0], tableSession };
+    });
+    return result;
+  } finally {
+    await dbSession.endSession();
+  }
 };
 
