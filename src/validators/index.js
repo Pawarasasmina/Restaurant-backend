@@ -9,7 +9,7 @@ export const tableSchema = z.object({ body: z.object({ number: z.string().min(1)
 export const sessionSchema = z.object({ body: z.object({ qrToken: z.string().min(20), guestId: z.string().min(8).max(100), guestCount: z.number().int().min(1).max(30).default(1) }) });
 export const orderSchema = z.object({ body: z.object({ guestId: z.string().min(8), notes: z.string().max(500).optional(), items: z.array(z.object({ menuItemId: id, quantity: z.number().int().min(1).max(20), variantId: id.optional(), extraIds: z.array(id).max(10).optional(), notes: z.string().max(300).optional() })).min(1).max(50) }) });
 export const callSchema = z.object({ body: z.object({ type: z.enum(['waiter','urgent','bill']) }) });
-export const reservationSchema = z.object({ body: z.object({ date: z.coerce.date(), partySize: z.number().int().min(1).max(30), name: z.string().min(2), phone: z.string().min(7), email: z.string().email().optional().or(z.literal('')), notes: z.string().max(500).optional() }) });
+export const reservationSchema = z.object({ body: z.object({ date: z.coerce.date(), partySize: z.number().int().min(1).max(30), tableId: id.optional(), name: z.string().min(2), phone: z.string().min(7), email: z.string().email().optional().or(z.literal('')), notes: z.string().max(500).optional() }) });
 export const settingsSchema = z.object({ body: z.object({
   name: z.string().min(1).max(120).optional(), description: z.string().max(2000).optional(), phone: z.string().max(40).optional(),
   email: z.string().email().optional().or(z.literal('')), address: z.string().max(300).optional(), mapUrl: z.string().url().optional().or(z.literal('')),

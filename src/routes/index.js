@@ -9,7 +9,7 @@ import { AuditLog, Bill, MenuCategory, MenuItem, Order, Reservation, RestaurantS
 import { allow, auth, guestSession, validate } from '../middleware/index.js';
 import { asyncHandler, AppError, decryptToken, encryptToken, hashToken, ok, signAccess, signRefresh, token } from '../utils/core.js';
 import { callSchema, categorySchema, itemSchema, loginSchema, orderSchema, reservationSchema, sessionSchema, settingsSchema, setupSchema, tableSchema } from '../validators/index.js';
-import { createBill, createOrder, createReservation, createWaiterCall, issueTableQr, openTableSession, qrData, recordPayment, transitionOrder } from '../services/domain.js';
+import { createBill, createOrder, createReservation, createWaiterCall, findAvailableTables, issueTableQr, openTableSession, qrData, recordPayment, transitionOrder } from '../services/domain.js';
 
 const router = Router();
 const imageUpload = multer({
@@ -60,6 +60,17 @@ router.get('/public/media/:id',asyncHandler(async(req,res)=>{
 }));
 router.get('/public/menu', asyncHandler(async (req, res) => { const query = { visible: true }; if (req.query.category) query.category = req.query.category; if (req.query.featured === 'true') query.featured = true; if (req.query.search) query.$text = { $search: req.query.search }; const page = Math.max(1, Number(req.query.page)||1), limit = Math.min(50, Math.max(1, Number(req.query.limit)||24)); const [items,total,categories] = await Promise.all([MenuItem.find(query).populate('category').sort({ order:1,name:1 }).skip((page-1)*limit).limit(limit),MenuItem.countDocuments(query),MenuCategory.find({ visible:true }).sort({order:1}),]); ok(res,{items,categories},200,{page,limit,total,pages:Math.ceil(total/limit)}); }));
 router.post('/public/reservations', rateLimit({ windowMs: 60000, limit: 5 }), validate(reservationSchema), asyncHandler(async (req,res)=>ok(res,await createReservation(req.validated.body),201)));
+router.get('/public/reservations/available-tables',asyncHandler(async(req,res)=>{
+  const date=new Date(String(req.query.date||'')),partySize=Number(req.query.partySize);
+  if(Number.isNaN(date.getTime())||!Number.isInteger(partySize)||partySize<1||partySize>30)throw new AppError(422,'Choose a valid date, time, and party size');
+  const settings=await RestaurantSettings.findOne({singletonKey:'primary'});
+  const rules=settings?.reservationRules||{leadMinutes:60,durationMinutes:120,maxPartySize:20};
+  if(date.getTime()<Date.now()+rules.leadMinutes*60000)throw new AppError(422,'Please choose a later reservation time');
+  if(partySize>rules.maxPartySize)throw new AppError(422,'Party size exceeds the online booking limit');
+  if(settings?.closures?.some(closure=>closure.date===date.toISOString().slice(0,10)))throw new AppError(409,'The restaurant is closed on this date');
+  const tables=await findAvailableTables(date,partySize,rules.durationMinutes);
+  ok(res,tables.map(table=>({id:table.id,number:table.number,displayName:table.displayName,capacity:table.capacity,zone:table.zone})));
+}));
 router.post('/table-sessions', rateLimit({ windowMs: 60000, limit: 10 }), validate(sessionSchema), asyncHandler(async(req,res)=>{ const result=await openTableSession({...req.validated.body,autoActivate:env.DEMO_AUTO_ACTIVATE_TABLES,minutes:env.TABLE_SESSION_MINUTES}); if(result.rawSession) res.cookie('tableSession',result.rawSession,{...authCookieOptions,maxAge:env.TABLE_SESSION_MINUTES*60000}); ok(res,{table:{id:result.table.id,number:result.table.number,displayName:result.table.displayName},session:{id:result.session.id,status:result.session.status,expiresAt:result.session.expiresAt},joined:result.joined},201); }));
 router.get('/guest/session',guestSession,asyncHandler(async(req,res)=>ok(res,{session:req.tableSession,table:await Table.findById(req.tableSession.table)})));
 router.get('/guest/orders',guestSession,asyncHandler(async(req,res)=>ok(res,await Order.find({tableSession:req.tableSession.id}).sort({createdAt:-1}))));

@@ -61,16 +61,25 @@ export const createWaiterCall = async (session, type) => {
   return WaiterCall.create({ tableSession: session.id, table: session.table, type, priority: type === 'urgent' ? 2 : 1, history: [{ status: 'open' }] });
 };
 
+export const findAvailableTables = async (date, partySize, durationMinutes = 120) => {
+  const end = new Date(date.getTime() + durationMinutes * 60000);
+  const candidates = await Table.find({ active: true, capacity: { $gte: partySize }, state: { $ne: 'disabled' } }).sort({ capacity: 1, number: 1 });
+  const availability = await Promise.all(candidates.map(async table => {
+    const conflict = await Reservation.exists({ table: table.id, status: { $in: ['pending','confirmed','seated'] }, date: { $lt: end }, $expr: { $gt: [{ $add: ['$date', { $multiply: ['$durationMinutes', 60000] }] }, date] } });
+    return conflict ? null : table;
+  }));
+  return availability.filter(Boolean);
+};
+
 export const createReservation = async payload => {
   const settings = await RestaurantSettings.findOne({ singletonKey: 'primary' }); const rules = settings?.reservationRules || { leadMinutes: 60, durationMinutes: 120, maxPartySize: 20 };
   if (payload.date.getTime() < Date.now() + rules.leadMinutes * 60000) throw new AppError(422, 'Reservation does not meet minimum lead time');
   if (payload.partySize > rules.maxPartySize) throw new AppError(422, 'Party size exceeds online booking limit');
   if (settings?.closures?.some(c => c.date === payload.date.toISOString().slice(0,10))) throw new AppError(409, 'Restaurant is closed on this date');
-  const end = new Date(payload.date.getTime() + rules.durationMinutes * 60000); const candidates = await Table.find({ active: true, capacity: { $gte: payload.partySize }, state: { $ne: 'disabled' } }).sort({ capacity: 1 });
-  for (const table of candidates) {
-    const conflict = await Reservation.exists({ table: table.id, status: { $in: ['pending','confirmed','seated'] }, date: { $lt: end }, $expr: { $gt: [{ $add: ['$date', { $multiply: ['$durationMinutes', 60000] }] }, payload.date] } });
-    if (!conflict) return Reservation.create({ ...payload, durationMinutes: rules.durationMinutes, table: table.id });
-  }
+  const candidates = await findAvailableTables(payload.date, payload.partySize, rules.durationMinutes);
+  const table = payload.tableId ? candidates.find(candidate => candidate.id === payload.tableId) : candidates[0];
+  if (table) { const { tableId: _tableId, ...reservation } = payload; return Reservation.create({ ...reservation, durationMinutes: rules.durationMinutes, table: table.id }); }
+  if (payload.tableId) throw new AppError(409, 'The selected table is no longer available. Please choose another table.', 'TABLE_UNAVAILABLE');
   throw new AppError(409, 'No table is available for this time and party size', 'RESERVATION_CONFLICT');
 };
 
