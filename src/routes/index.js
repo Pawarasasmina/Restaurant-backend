@@ -21,7 +21,22 @@ const imageUpload = multer({
   },
 });
 const audit = (req, action, entity, after) => AuditLog.create({ actor: req.user?.id, action, entityType: entity?.constructor?.modelName, entityId: entity?.id, after, ip: req.ip, userAgent: req.get('user-agent') }).catch(() => {});
-const cookies = res => ({ set(access, refresh) { const options = { httpOnly: true, secure: env.NODE_ENV === 'production', sameSite: 'lax', path: '/' }; res.cookie('accessToken', access, { ...options, maxAge: 15*60000 }); res.cookie('refreshToken', refresh, { ...options, maxAge: 7*86400000 }); }, clear() { res.clearCookie('accessToken'); res.clearCookie('refreshToken'); } });
+const authCookieOptions = {
+  httpOnly: true,
+  secure: env.NODE_ENV === 'production',
+  sameSite: env.NODE_ENV === 'production' ? 'none' : 'lax',
+  path: '/',
+};
+const cookies = res => ({
+  set(access, refresh) {
+    res.cookie('accessToken', access, { ...authCookieOptions, maxAge: 15 * 60000 });
+    res.cookie('refreshToken', refresh, { ...authCookieOptions, maxAge: 7 * 86400000 });
+  },
+  clear() {
+    res.clearCookie('accessToken', authCookieOptions);
+    res.clearCookie('refreshToken', authCookieOptions);
+  },
+});
 
 router.get('/health', (_req, res) => ok(res, { status: 'ok', timestamp: new Date().toISOString() }));
 router.post('/auth/setup', validate(setupSchema), asyncHandler(async (req, res) => { if (await User.exists({ role: 'owner' })) throw new AppError(409, 'Owner setup is already complete'); const user = await User.create({ ...req.validated.body, passwordHash: await bcrypt.hash(req.validated.body.password, 12), role: 'owner' }); ok(res, { id: user.id, email: user.email, role: user.role }, 201); }));
@@ -45,7 +60,7 @@ router.get('/public/media/:id',asyncHandler(async(req,res)=>{
 }));
 router.get('/public/menu', asyncHandler(async (req, res) => { const query = { visible: true }; if (req.query.category) query.category = req.query.category; if (req.query.featured === 'true') query.featured = true; if (req.query.search) query.$text = { $search: req.query.search }; const page = Math.max(1, Number(req.query.page)||1), limit = Math.min(50, Math.max(1, Number(req.query.limit)||24)); const [items,total,categories] = await Promise.all([MenuItem.find(query).populate('category').sort({ order:1,name:1 }).skip((page-1)*limit).limit(limit),MenuItem.countDocuments(query),MenuCategory.find({ visible:true }).sort({order:1}),]); ok(res,{items,categories},200,{page,limit,total,pages:Math.ceil(total/limit)}); }));
 router.post('/public/reservations', rateLimit({ windowMs: 60000, limit: 5 }), validate(reservationSchema), asyncHandler(async (req,res)=>ok(res,await createReservation(req.validated.body),201)));
-router.post('/table-sessions', rateLimit({ windowMs: 60000, limit: 10 }), validate(sessionSchema), asyncHandler(async(req,res)=>{ const result=await openTableSession({...req.validated.body,autoActivate:env.DEMO_AUTO_ACTIVATE_TABLES,minutes:env.TABLE_SESSION_MINUTES}); if(result.rawSession) res.cookie('tableSession',result.rawSession,{httpOnly:true,secure:env.NODE_ENV==='production',sameSite:'lax',maxAge:env.TABLE_SESSION_MINUTES*60000}); ok(res,{table:{id:result.table.id,number:result.table.number,displayName:result.table.displayName},session:{id:result.session.id,status:result.session.status,expiresAt:result.session.expiresAt},joined:result.joined},201); }));
+router.post('/table-sessions', rateLimit({ windowMs: 60000, limit: 10 }), validate(sessionSchema), asyncHandler(async(req,res)=>{ const result=await openTableSession({...req.validated.body,autoActivate:env.DEMO_AUTO_ACTIVATE_TABLES,minutes:env.TABLE_SESSION_MINUTES}); if(result.rawSession) res.cookie('tableSession',result.rawSession,{...authCookieOptions,maxAge:env.TABLE_SESSION_MINUTES*60000}); ok(res,{table:{id:result.table.id,number:result.table.number,displayName:result.table.displayName},session:{id:result.session.id,status:result.session.status,expiresAt:result.session.expiresAt},joined:result.joined},201); }));
 router.get('/guest/session',guestSession,asyncHandler(async(req,res)=>ok(res,{session:req.tableSession,table:await Table.findById(req.tableSession.table)})));
 router.get('/guest/orders',guestSession,asyncHandler(async(req,res)=>ok(res,await Order.find({tableSession:req.tableSession.id}).sort({createdAt:-1}))));
 router.post('/guest/orders',guestSession,validate(orderSchema),asyncHandler(async(req,res)=>{const key=req.get('idempotency-key');if(!key||key.length<12)throw new AppError(400,'A valid Idempotency-Key header is required');const result=await createOrder(req.tableSession,req.validated.body,key);req.app.get('io').to('staff:orders').emit('order:new',result.order);req.app.get('io').to(`table:${req.tableSession.id}`).emit('order:changed',result.order);ok(res,result.order,result.duplicate?200:201);}));
