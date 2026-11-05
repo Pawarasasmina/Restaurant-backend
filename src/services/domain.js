@@ -14,7 +14,7 @@ export const openTableSession = async ({ qrToken, guestId, guestCount, autoActiv
   const table = await Table.findOne({ qrTokenHash: hashToken(qrToken) }).select('+qrTokenHash');
   if (!table?.active || table.state === 'disabled') throw new AppError(404, 'QR code is invalid or revoked', 'INVALID_QR');
   const active = await TableSession.findOne({ table: table.id, status: 'active', expiresAt: { $gt: new Date() } });
-  if (active) { if (!active.guestIds.includes(guestId)) active.guestIds.push(guestId); await active.save(); return { table, session: active, joined: true }; }
+  if (active) { if (!active.guestIds.includes(guestId)) active.guestIds.push(guestId); await active.save(); return { table, session: active, rawSession: active.tokenHash, joined: true }; }
   const rawSession = token(36);
   const session = await TableSession.create({ table: table.id, tokenHash: rawSession, status: autoActivate ? 'active' : 'pending', guestCount, guestIds: [guestId], expiresAt: new Date(Date.now() + minutes * 60000) });
   if (autoActivate) { table.state = 'occupied'; await table.save(); }
